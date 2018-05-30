@@ -103,16 +103,39 @@ public class MainActivity extends AppCompatActivity implements GLSurfaceView.Ren
     synchronized (singleTapAnchorLock) {
       if (anchor == null
           && queuedSingleTap != null
-          && currentTrackingState == TrackingState.TRACKING) {
+          && currentTrackingState == TrackingState.TRACKING&& appAnchorState == AppAnchorState.NONE) {
         for (HitResult hit : currentFrame.hitTest(queuedSingleTap)) {
           if (shouldCreateAnchorWithHit(hit)) {
-            Anchor newAnchor = hit.createAnchor();
+            Anchor newAnchor = session.hostCloudAnchor(hit.createAnchor()); // Change this line.
             setNewAnchor(newAnchor);
+
+// Add some UI to show you that the anchor is being hosted.
+            appAnchorState = AppAnchorState.HOSTING; // Add this line.
+            snackbarHelper.showMessage(this, "Now hosting anchor..."); // Add this line.
             break;
           }
         }
       }
       queuedSingleTap = null;
+    }
+  }
+
+
+
+  private void checkUpdatedAnchor() {
+    synchronized (singleTapAnchorLock) {
+      if (appAnchorState != AppAnchorState.HOSTING) {
+        return;
+      }
+      Anchor.CloudAnchorState cloudState = anchor.getCloudAnchorState();
+      if (cloudState.isError()) {
+        snackbarHelper.showMessageWithDismiss(this, "Error hosting anchor: " + cloudState);
+        appAnchorState = AppAnchorState.NONE;
+      } else if (cloudState == Anchor.CloudAnchorState.SUCCESS) {
+        snackbarHelper.showMessageWithDismiss(
+                this, "Anchor hosted successfully! Cloud ID: " + anchor.getCloudAnchorId());
+        appAnchorState = AppAnchorState.HOSTED;
+      }
     }
   }
 
@@ -224,6 +247,7 @@ public class MainActivity extends AppCompatActivity implements GLSurfaceView.Ren
 
       // Create default config and check if supported.
       Config config = new Config(session);
+      config.setCloudAnchorMode(Config.CloudAnchorMode.ENABLED); // Add this line.
       session.configure(config);
     }
 
@@ -241,7 +265,14 @@ public class MainActivity extends AppCompatActivity implements GLSurfaceView.Ren
     surfaceView.onResume();
     displayRotationHelper.onResume();
   }
+  private enum AppAnchorState {
+    NONE,
+    HOSTING,
+    HOSTED
+  }
 
+  @GuardedBy("singleTapAnchorLock")
+  private AppAnchorState appAnchorState = AppAnchorState.NONE;
   @Override
   public void onPause() {
     super.onPause();
@@ -324,7 +355,7 @@ public class MainActivity extends AppCompatActivity implements GLSurfaceView.Ren
       Frame frame = session.update();
       Camera camera = frame.getCamera();
       TrackingState cameraTrackingState = camera.getTrackingState();
-
+      checkUpdatedAnchor(); // Add this line.
       // Handle taps.
       handleTapOnDraw(cameraTrackingState, frame);
 
@@ -388,5 +419,7 @@ public class MainActivity extends AppCompatActivity implements GLSurfaceView.Ren
       anchor.detach();
     }
     anchor = newAnchor;
+    appAnchorState = AppAnchorState.NONE; // Add this line.
+    snackbarHelper.hide(this); // Add this line.
   }
 }
