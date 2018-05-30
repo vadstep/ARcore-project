@@ -27,6 +27,7 @@ import android.view.GestureDetector;
 import android.view.MotionEvent;
 import android.widget.Button;
 import android.widget.Toast;
+
 import com.google.ar.core.Anchor;
 import com.google.ar.core.ArCoreApk;
 import com.google.ar.core.Camera;
@@ -44,6 +45,7 @@ import com.google.ar.core.examples.java.common.helpers.CameraPermissionHelper;
 import com.google.ar.core.examples.java.common.helpers.DisplayRotationHelper;
 import com.google.ar.core.examples.java.common.helpers.FullScreenHelper;
 import com.google.ar.core.examples.java.common.helpers.SnackbarHelper;
+import com.google.ar.core.examples.java.common.helpers.StorageManager;
 import com.google.ar.core.examples.java.common.rendering.BackgroundRenderer;
 import com.google.ar.core.examples.java.common.rendering.ObjectRenderer;
 import com.google.ar.core.examples.java.common.rendering.ObjectRenderer.BlendMode;
@@ -53,7 +55,9 @@ import com.google.ar.core.exceptions.CameraNotAvailableException;
 import com.google.ar.core.exceptions.UnavailableApkTooOldException;
 import com.google.ar.core.exceptions.UnavailableArcoreNotInstalledException;
 import com.google.ar.core.exceptions.UnavailableSdkTooOldException;
+
 import java.io.IOException;
+
 import javax.microedition.khronos.egl.EGLConfig;
 import javax.microedition.khronos.opengles.GL10;
 
@@ -72,7 +76,7 @@ public class MainActivity extends AppCompatActivity implements GLSurfaceView.Ren
   private final ObjectRenderer virtualObjectShadow = new ObjectRenderer();
   private final PlaneRenderer planeRenderer = new PlaneRenderer();
   private final PointCloudRenderer pointCloudRenderer = new PointCloudRenderer();
-
+  private final StorageManager storageManager = new StorageManager();
   // Matrices pre-allocated here to reduce the number of allocations on every frame draw.
   private final float[] anchorMatrix = new float[16];
   private final float[] projectionMatrix = new float[16];
@@ -97,6 +101,19 @@ public class MainActivity extends AppCompatActivity implements GLSurfaceView.Ren
   @Nullable
   @GuardedBy("singleTapAnchorLock")
   private Anchor anchor;
+
+
+
+  private void onResolveOkPressed(String dialogValue) {
+    int shortCode = Integer.parseInt(dialogValue);
+    String cloudAnchorId = storageManager.getCloudAnchorID(this, shortCode);
+    synchronized (singleTapAnchorLock) {
+      Anchor resolvedAnchor = session.resolveCloudAnchor(cloudAnchorId);
+      setNewAnchor(resolvedAnchor);
+      snackbarHelper.showMessage(this, "Now resolving anchor...");
+      appAnchorState = AppAnchorState.RESOLVING;
+    }
+  }
 
   /** Handles a single tap during a {@link #onDrawFrame(GL10)} call. */
   private void handleTapOnDraw(TrackingState currentTrackingState, Frame currentFrame) {
@@ -124,17 +141,29 @@ public class MainActivity extends AppCompatActivity implements GLSurfaceView.Ren
 
   private void checkUpdatedAnchor() {
     synchronized (singleTapAnchorLock) {
-      if (appAnchorState != AppAnchorState.HOSTING) {
+      if (appAnchorState != AppAnchorState.HOSTING && appAnchorState != AppAnchorState.RESOLVING) {
         return;
       }
       Anchor.CloudAnchorState cloudState = anchor.getCloudAnchorState();
-      if (cloudState.isError()) {
-        snackbarHelper.showMessageWithDismiss(this, "Error hosting anchor: " + cloudState);
-        appAnchorState = AppAnchorState.NONE;
-      } else if (cloudState == Anchor.CloudAnchorState.SUCCESS) {
-        snackbarHelper.showMessageWithDismiss(
-                this, "Anchor hosted successfully! Cloud ID: " + anchor.getCloudAnchorId());
-        appAnchorState = AppAnchorState.HOSTED;
+      if (appAnchorState == AppAnchorState.HOSTING) {
+        if (cloudState.isError()) {
+          snackbarHelper.showMessageWithDismiss(this, "Error hosting anchor: " + cloudState);
+          appAnchorState = AppAnchorState.NONE;
+        } else if (cloudState == Anchor.CloudAnchorState.SUCCESS) {
+          int shortCode = storageManager.nextShortCode(this);
+          storageManager.storeUsingShortCode(this, shortCode, anchor.getCloudAnchorId());
+          snackbarHelper.showMessageWithDismiss(
+                  this, "Anchor hosted successfully! Cloud Short Code: " + shortCode);
+          appAnchorState = AppAnchorState.HOSTED;
+        }
+      } else if (appAnchorState == AppAnchorState.RESOLVING) {
+        if (cloudState.isError()) {
+          snackbarHelper.showMessageWithDismiss(this, "Error resolving anchor: " + cloudState);
+          appAnchorState = AppAnchorState.NONE;
+        } else if (cloudState == Anchor.CloudAnchorState.SUCCESS) {
+          snackbarHelper.showMessageWithDismiss(this, "Anchor resolved successfully!");
+          appAnchorState = AppAnchorState.RESOLVED;
+        }
       }
     }
   }
@@ -200,6 +229,20 @@ public class MainActivity extends AppCompatActivity implements GLSurfaceView.Ren
             setNewAnchor(null);
           }
         });
+    Button resolveButton = findViewById(R.id.resolve_button);
+    resolveButton.setOnClickListener(
+            (unusedView) -> {
+              synchronized (singleTapAnchorLock) {
+                if (anchor != null) {
+                  snackbarHelper.showMessageWithDismiss(this, "Please clear anchor first.");
+                  return;
+                }
+              }
+              ResolveDialogFragment dialog = new ResolveDialogFragment();
+              dialog.setOkListener(this::onResolveOkPressed);
+              dialog.show(getSupportFragmentManager(), "Resolve");
+            });
+
   }
 
   @Override
@@ -268,7 +311,10 @@ public class MainActivity extends AppCompatActivity implements GLSurfaceView.Ren
   private enum AppAnchorState {
     NONE,
     HOSTING,
-    HOSTED
+    HOSTED,
+
+    // Add these two values:
+    RESOLVING, RESOLVED
   }
 
   @GuardedBy("singleTapAnchorLock")
